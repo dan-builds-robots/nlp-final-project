@@ -123,7 +123,6 @@ class AAVE_SAE_Dataset(Dataset):
             "tgt_text": target_text,
         }
 
-
 def causal_mask(size):
     # gets the upper trianglar matrix above diagonal
     mask = torch.triu(torch.ones((1, size, size)), diagonal=1).type(torch.int)
