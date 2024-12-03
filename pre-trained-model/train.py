@@ -1,11 +1,12 @@
-from datasets import Dataset, concatenate_datasets, Value, Sequence
-from transformers import (AutoModelForSeq2SeqLM, AutoTokenizer, Seq2SeqTrainer,
-                          Seq2SeqTrainingArguments)
-from transformers import DataCollatorForSeq2Seq
+import random
+
 import evaluate
 import numpy as np
 import torch
-import random
+from datasets import Dataset, Sequence, Value, concatenate_datasets
+from transformers import (AutoModelForSeq2SeqLM, AutoTokenizer,
+                          DataCollatorForSeq2Seq, Seq2SeqTrainer,
+                          Seq2SeqTrainingArguments)
 
 
 def train_model(
@@ -47,8 +48,12 @@ def train_model(
     source_to_target_prefix = f"Translate {source_lang} to {target_lang}: "
     target_to_source_prefix = f"Translate {target_lang} to {source_lang}: "
 
-    source_to_target_data = source_to_target_data.map(lambda x: {source_lang: source_to_target_prefix + x[source_lang]})
-    target_to_source_data = target_to_source_data.map(lambda x: {target_lang: target_to_source_prefix + x[target_lang]})
+    source_to_target_data = source_to_target_data.map(
+        lambda x: {source_lang: source_to_target_prefix + x[source_lang]}
+    )
+    target_to_source_data = target_to_source_data.map(
+        lambda x: {target_lang: target_to_source_prefix + x[target_lang]}
+    )
 
     source_to_target_data = source_to_target_data.map(
         preprocess_source_to_target_function,
@@ -59,21 +64,23 @@ def train_model(
         batched=True,
     )
 
-    source_to_target_data = source_to_target_data.remove_columns(source_lang).remove_columns(target_lang)
-    target_to_source_data = target_to_source_data.remove_columns(source_lang).remove_columns(target_lang)
+    source_to_target_data = source_to_target_data.remove_columns(
+        source_lang
+    ).remove_columns(target_lang)
+    target_to_source_data = target_to_source_data.remove_columns(
+        source_lang
+    ).remove_columns(target_lang)
 
     # prepare monolingual data
-    source_data = source_data.map(lambda x: {source_lang: source_to_target_prefix + x[source_lang]})
-    target_data = target_data.map(lambda x: {target_lang: target_to_source_prefix + x[target_lang]})
-
     source_data = source_data.map(
-        preprocess_source_function,
-        batched=True
+        lambda x: {source_lang: source_to_target_prefix + x[source_lang]}
     )
     target_data = target_data.map(
-        preprocess_target_function,
-        batched=True
+        lambda x: {target_lang: target_to_source_prefix + x[target_lang]}
     )
+
+    source_data = source_data.map(preprocess_source_function, batched=True)
+    target_data = target_data.map(preprocess_target_function, batched=True)
 
     source_data = source_data.remove_columns(source_lang)
     target_data = target_data.remove_columns(target_lang)
@@ -104,7 +111,9 @@ def train_model(
         fp16=True,
     )
 
-    combined_target_to_source_data = target_to_source_data.train_test_split(test_size=0.1)
+    combined_target_to_source_data = target_to_source_data.train_test_split(
+        test_size=0.1
+    )
 
     for _ in range(iterations):
         target_to_source_trainer = Seq2SeqTrainer(
@@ -119,18 +128,25 @@ def train_model(
 
         target_to_source_trainer.train()
 
-        synthetic_source_data = target_to_source_trainer.predict(target_data, max_length=60).predictions.tolist()
+        synthetic_source_data = target_to_source_trainer.predict(
+            target_data, max_length=60
+        ).predictions.tolist()
 
-        num_samples = 5 
+        num_samples = 5
 
         random_indices = random.sample(range(len(synthetic_source_data)), num_samples)
 
         random_pairs = [
-            (synthetic_source_data[idx], target_data["input_ids"][idx]) for idx in random_indices
+            (synthetic_source_data[idx], target_data["input_ids"][idx])
+            for idx in random_indices
         ]
 
         for i, (synthetic, target) in enumerate(random_pairs):
-            synthetic = [synthetic_token for synthetic_token in synthetic if synthetic_token != -100]
+            synthetic = [
+                synthetic_token
+                for synthetic_token in synthetic
+                if synthetic_token != -100
+            ]
             synthetic_tokens = tokenizer.decode(synthetic)
             target_tokens = tokenizer.decode(target)
             synthetic_sequence = "".join(synthetic_tokens)
@@ -140,16 +156,33 @@ def train_model(
             print(f"Target: {target_sequence}")
             print("-" * 50)
 
-        synthetic_source_to_target_data = target_data.rename_column("input_ids", "labels")
-        synthetic_source_to_target_data = synthetic_source_to_target_data.add_column("input_ids", synthetic_source_data)
+        synthetic_source_to_target_data = target_data.rename_column(
+            "input_ids", "labels"
+        )
+        synthetic_source_to_target_data = synthetic_source_to_target_data.add_column(
+            "input_ids", synthetic_source_data
+        )
 
-        synthetic_source_to_target_data = synthetic_source_to_target_data.cast_column("labels", Sequence(Value("int64")))
-        synthetic_source_to_target_data = synthetic_source_to_target_data.cast_column("input_ids", Sequence(Value("int32")))
+        synthetic_source_to_target_data["attention_mask"] = [
+            [1 if token != tokenizer.pad_token_id else 0 for token in sequence]
+            for sequence in synthetic_source_data
+        ]
 
-        combined_source_to_target_data = concatenate_datasets([source_to_target_data, synthetic_source_to_target_data])
-        
-        combined_source_to_target_data = combined_source_to_target_data.train_test_split(test_size=0.1)
-        
+        synthetic_source_to_target_data = synthetic_source_to_target_data.cast_column(
+            "labels", Sequence(Value("int64"))
+        )
+        synthetic_source_to_target_data = synthetic_source_to_target_data.cast_column(
+            "input_ids", Sequence(Value("int32"))
+        )
+
+        combined_source_to_target_data = concatenate_datasets(
+            [source_to_target_data, synthetic_source_to_target_data]
+        )
+
+        combined_source_to_target_data = (
+            combined_source_to_target_data.train_test_split(test_size=0.1)
+        )
+
         source_to_target_trainer = Seq2SeqTrainer(
             model=source_to_target_model,
             args=source_to_target_training_args,
@@ -162,47 +195,59 @@ def train_model(
 
         source_to_target_trainer.train()
 
-        synthetic_target_data = source_to_target_trainer.predict(source_data).predictions.astype(np.int64).tolist()
+        synthetic_target_data = (
+            source_to_target_trainer.predict(source_data)
+            .predictions.astype(np.int64)
+            .tolist()
+        )
 
-        synthetic_target_to_source_data = source_data.rename_column("input_ids", "labels")
-        synthetic_target_to_source_data = synthetic_target_to_source_data.add_column("input_ids", synthetic_target_data)
+        synthetic_target_to_source_data = source_data.rename_column(
+            "input_ids", "labels"
+        )
+        synthetic_target_to_source_data = synthetic_target_to_source_data.add_column(
+            "input_ids", synthetic_target_data
+        )
 
-        combined_target_to_source_data = concatenate_datasets([target_to_source_data, synthetic_target_to_source_data])
+        combined_target_to_source_data = concatenate_datasets(
+            [target_to_source_data, synthetic_target_to_source_data]
+        )
 
-        combined_source_to_target_data = combined_target_to_source_data.train_test_split(test_size=0.1)
+        combined_source_to_target_data = (
+            combined_target_to_source_data.train_test_split(test_size=0.1)
+        )
 
     return source_to_target_model, target_to_source_model
 
 
 def preprocess_source_to_target_function(examples, max_length=200):
-    inputs = examples[src_lang] 
+    inputs = examples[src_lang]
     targets = examples[tgt_lang]
     model_inputs = tokenizer(
         inputs, text_target=targets, max_length=max_length, truncation=True
     )
     return model_inputs
 
+
 def preprocess_target_to_source_function(examples, max_length=200):
-    inputs = examples[tgt_lang] 
+    inputs = examples[tgt_lang]
     targets = examples[src_lang]
     model_inputs = tokenizer(
         inputs, text_target=targets, max_length=max_length, truncation=True
     )
     return model_inputs
 
+
 def preprocess_target_function(examples, max_length=200):
-    inputs = examples[tgt_lang] 
-    model_inputs = tokenizer(
-        inputs, max_length=max_length, truncation=True
-    )
+    inputs = examples[tgt_lang]
+    model_inputs = tokenizer(inputs, max_length=max_length, truncation=True)
     return model_inputs
 
+
 def preprocess_source_function(examples, max_length=200):
-    inputs = examples[src_lang] 
-    model_inputs = tokenizer(
-        inputs, max_length=max_length, truncation=True
-    )
+    inputs = examples[src_lang]
+    model_inputs = tokenizer(inputs, max_length=max_length, truncation=True)
     return model_inputs
+
 
 def yield_paired_lines(source_path, target_path, source_lang, target_lang):
     with open(source_path, "r", encoding="utf-8") as source_text_file, open(
@@ -305,6 +350,7 @@ def combine(source_data, target_data, parallel_data, source_lang, target_lang):
 
     return combined_parallel_data
 
+
 def compute_metrics(eval_preds):
     preds, labels = eval_preds
     # In case the model returns more than the prediction logits
@@ -323,6 +369,7 @@ def compute_metrics(eval_preds):
 
     result = metric.compute(predictions=decoded_preds, references=decoded_labels)
     return {"bleu": result["score"]}
+
 
 if __name__ == "__main__":
     tokenizer = AutoTokenizer.from_pretrained("google-t5/t5-small")
@@ -345,8 +392,12 @@ if __name__ == "__main__":
         },
     )
 
-    monolingual_src_data_path = "/content/gdrive/MyDrive/6.861 Project/data/AAVE-SAE-data/coraal_dataset.txt"
-    monolingual_tgt_data_path = "/content/gdrive/MyDrive/6.861 Project/data/AAVE-SAE-data/cleaned_BAWE.txt"
+    monolingual_src_data_path = (
+        "/content/gdrive/MyDrive/6.861 Project/data/AAVE-SAE-data/coraal_dataset.txt"
+    )
+    monolingual_tgt_data_path = (
+        "/content/gdrive/MyDrive/6.861 Project/data/AAVE-SAE-data/cleaned_BAWE.txt"
+    )
 
     raw_monolingual_src_data = Dataset.from_generator(
         yield_mono_lines,
@@ -356,10 +407,21 @@ if __name__ == "__main__":
         yield_mono_lines,
         gen_kwargs={"path": monolingual_tgt_data_path, "lang": tgt_lang},
     )
-    
-    raw_monolingual_tgt_data = raw_monolingual_tgt_data.filter(lambda x: len(x['SAE']) > 50 and len(x['SAE']) < 65)
+
+    raw_monolingual_tgt_data = raw_monolingual_tgt_data.filter(
+        lambda x: len(x["SAE"]) > 50 and len(x["SAE"]) < 65
+    )
 
     metric = evaluate.load("sacrebleu")
 
-    train_model(raw_paired_dataset, source_to_target_model, target_to_source_model, tokenizer, raw_monolingual_src_data, raw_monolingual_tgt_data, 1, src_lang, tgt_lang)
-
+    train_model(
+        raw_paired_dataset,
+        source_to_target_model,
+        target_to_source_model,
+        tokenizer,
+        raw_monolingual_src_data,
+        raw_monolingual_tgt_data,
+        1,
+        src_lang,
+        tgt_lang,
+    )
